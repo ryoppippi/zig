@@ -1029,18 +1029,7 @@ pub fn create(gpa: Allocator, options: InitOptions) !*Compilation {
 
         const ofmt = options.object_format orelse options.target.getObjectFormat();
 
-        const use_stage1 = options.use_stage1 orelse blk: {
-            // Even though we may have no Zig code to compile (depending on `options.main_pkg`),
-            // we may need to use stage1 for building compiler-rt and other dependencies.
-
-            if (options.use_llvm) |use_llvm| {
-                if (!use_llvm) {
-                    break :blk false;
-                }
-            }
-
-            break :blk build_options.is_stage1;
-        };
+        const use_stage1 = options.use_stage1 orelse false;
 
         const cache_mode = if (use_stage1 and !options.disable_lld_caching)
             CacheMode.whole
@@ -2174,7 +2163,7 @@ pub fn update(comp: *Compilation) !void {
         comp.c_object_work_queue.writeItemAssumeCapacity(key);
     }
 
-    const use_stage1 = build_options.is_stage1 and comp.bin_file.options.use_stage1;
+    const use_stage1 = build_options.have_stage1 and comp.bin_file.options.use_stage1;
     if (comp.bin_file.options.module) |module| {
         module.compile_log_text.shrinkAndFree(module.gpa, 0);
         module.generation += 1;
@@ -2350,7 +2339,7 @@ fn flush(comp: *Compilation, prog_node: *std.Progress.Node) !void {
     };
     comp.link_error_flags = comp.bin_file.errorFlags();
 
-    const use_stage1 = build_options.is_stage1 and comp.bin_file.options.use_stage1;
+    const use_stage1 = build_options.have_stage1 and comp.bin_file.options.use_stage1;
     if (!use_stage1) {
         if (comp.bin_file.options.module) |module| {
             try link.File.C.flushEmitH(module);
@@ -2808,7 +2797,7 @@ pub fn performAllTheWork(
     comp.work_queue_wait_group.reset();
     defer comp.work_queue_wait_group.wait();
 
-    const use_stage1 = build_options.is_stage1 and comp.bin_file.options.use_stage1;
+    const use_stage1 = build_options.have_stage1 and comp.bin_file.options.use_stage1;
 
     {
         const astgen_frame = tracy.namedFrame("astgen");
@@ -3393,7 +3382,7 @@ pub fn cImport(comp: *Compilation, c_src: []const u8) !CImportResult {
     var man = comp.obtainCObjectCacheManifest();
     defer man.deinit();
 
-    const use_stage1 = build_options.is_stage1 and comp.bin_file.options.use_stage1;
+    const use_stage1 = build_options.have_stage1 and comp.bin_file.options.use_stage1;
 
     man.hash.add(@as(u16, 0xb945)); // Random number to distinguish translate-c from compiling C objects
     man.hash.add(use_stage1);
@@ -4713,7 +4702,7 @@ pub fn generateBuiltinZigSource(comp: *Compilation, allocator: Allocator) Alloca
 
     const target = comp.getTarget();
     const generic_arch_name = target.cpu.arch.genericName();
-    const use_stage1 = build_options.is_stage1 and comp.bin_file.options.use_stage1;
+    const use_stage1 = build_options.have_stage1 and comp.bin_file.options.use_stage1;
 
     const zig_backend: std.builtin.CompilerBackend = blk: {
         if (use_stage1) break :blk .stage1;
@@ -4999,7 +4988,7 @@ fn buildOutputFromZig(
         .link_mode = .Static,
         .function_sections = true,
         .no_builtin = true,
-        .use_stage1 = build_options.is_stage1 and comp.bin_file.options.use_stage1,
+        .use_stage1 = build_options.have_stage1 and comp.bin_file.options.use_stage1,
         .want_sanitize_c = false,
         .want_stack_check = false,
         .want_red_zone = comp.bin_file.options.red_zone,
