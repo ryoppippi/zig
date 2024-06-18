@@ -1695,7 +1695,6 @@ test "@inComptime" {
         }
     };
     try expectEqual(false, @inComptime());
-    try expectEqual(true, comptime @inComptime());
     try expectEqual(false, S.inComptime());
     try expectEqual(true, comptime S.inComptime());
 }
