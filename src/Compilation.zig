@@ -2632,22 +2632,24 @@ fn reportMultiModuleErrors(mod: *Module) !void {
             for (notes[0..num_notes], file.references.items[0..num_notes], 0..) |*note, ref, i| {
                 errdefer for (notes[0..i]) |*n| n.deinit(mod.gpa);
                 note.* = switch (ref) {
-                    .import => |loc| blk: {
-                        break :blk try Module.ErrorMsg.init(
-                            mod.gpa,
-                            loc,
-                            "imported from module {s}",
-                            .{loc.file_scope.mod.fully_qualified_name},
-                        );
-                    },
-                    .root => |pkg| blk: {
-                        break :blk try Module.ErrorMsg.init(
-                            mod.gpa,
-                            .{ .file_scope = file, .base_node = 0, .lazy = .entire_file },
-                            "root of module {s}",
-                            .{pkg.fully_qualified_name},
-                        );
-                    },
+                    .import => |import| try Module.ErrorMsg.init(
+                        mod.gpa,
+                        .{
+                            .base_node_inst = try mod.intern_pool.trackZir(mod.gpa, import.file, .main_struct_inst),
+                            .offset = .{ .token_abs = import.token },
+                        },
+                        "imported from module {s}",
+                        .{import.file.mod.fully_qualified_name},
+                    ),
+                    .root => |pkg| try Module.ErrorMsg.init(
+                        mod.gpa,
+                        .{
+                            .base_node_inst = try mod.intern_pool.trackZir(mod.gpa, file, .main_struct_inst),
+                            .offset = .entire_file,
+                        },
+                        "root of module {s}",
+                        .{pkg.fully_qualified_name},
+                    ),
                 };
             }
             errdefer for (notes[0..num_notes]) |*n| n.deinit(mod.gpa);
@@ -2655,7 +2657,10 @@ fn reportMultiModuleErrors(mod: *Module) !void {
             if (omitted > 0) {
                 notes[num_notes] = try Module.ErrorMsg.init(
                     mod.gpa,
-                    .{ .file_scope = file, .base_node = 0, .lazy = .entire_file },
+                    .{
+                        .base_node_inst = try mod.intern_pool.trackZir(mod.gpa, file, .main_struct_inst),
+                        .offset = .entire_file,
+                    },
                     "{} more references omitted",
                     .{omitted},
                 );
@@ -2664,7 +2669,10 @@ fn reportMultiModuleErrors(mod: *Module) !void {
 
             const err = try Module.ErrorMsg.create(
                 mod.gpa,
-                .{ .file_scope = file, .base_node = 0, .lazy = .entire_file },
+                .{
+                    .base_node_inst = try mod.intern_pool.trackZir(mod.gpa, file, .main_struct_inst),
+                    .offset = .entire_file,
+                },
                 "file exists in multiple modules",
                 .{},
             );
@@ -3063,7 +3071,7 @@ pub fn getAllErrorsAlloc(comp: *Compilation) !ErrorBundle {
 
             const values = zcu.compile_log_sources.values();
             // First one will be the error; subsequent ones will be notes.
-            const src_loc = values[0].src().upgrade(zcu);
+            const src_loc = values[0].src();
             const err_msg: Module.ErrorMsg = .{
                 .src_loc = src_loc,
                 .msg = "found compile log statement",
@@ -3073,7 +3081,7 @@ pub fn getAllErrorsAlloc(comp: *Compilation) !ErrorBundle {
 
             for (values[1..], err_msg.notes) |src_info, *note| {
                 note.* = .{
-                    .src_loc = src_info.src().upgrade(zcu),
+                    .src_loc = src_info.src(),
                     .msg = "also here",
                 };
             }
@@ -3142,8 +3150,9 @@ pub fn addModuleErrorMsg(
 ) !void {
     const gpa = eb.gpa;
     const ip = &mod.intern_pool;
-    const err_source = module_err_msg.src_loc.file_scope.getSource(gpa) catch |err| {
-        const file_path = try module_err_msg.src_loc.file_scope.fullPath(gpa);
+    const err_src_loc = module_err_msg.src_loc.upgrade(mod);
+    const err_source = err_src_loc.file_scope.getSource(gpa) catch |err| {
+        const file_path = try err_src_loc.file_scope.fullPath(gpa);
         defer gpa.free(file_path);
         try eb.addRootErrorMessage(.{
             .msg = try eb.printString("unable to load '{s}': {s}", .{
@@ -3152,9 +3161,9 @@ pub fn addModuleErrorMsg(
         });
         return;
     };
-    const err_span = try module_err_msg.src_loc.span(gpa);
+    const err_span = try err_src_loc.span(gpa);
     const err_loc = std.zig.findLineColumn(err_source.bytes, err_span.main);
-    const file_path = try module_err_msg.src_loc.file_scope.fullPath(gpa);
+    const file_path = try err_src_loc.file_scope.fullPath(gpa);
     defer gpa.free(file_path);
 
     var ref_traces: std.ArrayListUnmanaged(ErrorBundle.ReferenceTrace) = .{};
@@ -3211,7 +3220,7 @@ pub fn addModuleErrorMsg(
         .span_end = err_span.end,
         .line = @intCast(err_loc.line),
         .column = @intCast(err_loc.column),
-        .source_line = if (module_err_msg.src_loc.lazy == .entire_file)
+        .source_line = if (err_src_loc.lazy == .entire_file)
             0
         else
             try eb.addString(err_loc.source_line),
@@ -3228,10 +3237,11 @@ pub fn addModuleErrorMsg(
     defer notes.deinit(gpa);
 
     for (module_err_msg.notes) |module_note| {
-        const source = try module_note.src_loc.file_scope.getSource(gpa);
-        const span = try module_note.src_loc.span(gpa);
+        const note_src_loc = module_note.src_loc.upgrade(mod);
+        const source = try note_src_loc.file_scope.getSource(gpa);
+        const span = try note_src_loc.span(gpa);
         const loc = std.zig.findLineColumn(source.bytes, span.main);
-        const note_file_path = try module_note.src_loc.file_scope.fullPath(gpa);
+        const note_file_path = try note_src_loc.file_scope.fullPath(gpa);
         defer gpa.free(note_file_path);
 
         const gop = try notes.getOrPutContext(gpa, .{
@@ -3525,7 +3535,7 @@ fn processOneJob(comp: *Compilation, job: Job, prog_node: std.Progress.Node) !vo
                     InternPool.AnalUnit.wrap(.{ .decl = decl_index }),
                     try Module.ErrorMsg.create(
                         gpa,
-                        decl.navSrcLoc(module).upgrade(module),
+                        decl.navSrcLoc(module),
                         "unable to update line number: {s}",
                         .{@errorName(err)},
                     ),
@@ -4026,9 +4036,8 @@ fn workerAstGenFile(
                 const res = mod.importFile(file, import_path) catch continue;
                 if (!res.is_pkg) {
                     res.file.addReference(mod.*, .{ .import = .{
-                        .file_scope = file,
-                        .base_node = 0,
-                        .lazy = .{ .token_abs = item.data.token },
+                        .file = file,
+                        .token = item.data.token,
                     } }) catch continue;
                 }
                 break :blk res;
@@ -4401,20 +4410,14 @@ fn reportRetryableAstGenError(
 
     file.status = .retryable_failure;
 
-    const src_loc: Module.SrcLoc = switch (src) {
+    const src_loc: Module.LazySrcLoc = switch (src) {
         .root => .{
-            .file_scope = file,
-            .base_node = 0,
-            .lazy = .entire_file,
+            .base_node_inst = try mod.intern_pool.trackZir(gpa, file, .main_struct_inst),
+            .offset = .entire_file,
         },
-        .import => |info| blk: {
-            const importing_file = info.importing_file;
-
-            break :blk .{
-                .file_scope = importing_file,
-                .base_node = 0,
-                .lazy = .{ .token_abs = info.import_tok },
-            };
+        .import => |info| .{
+            .base_node_inst = try mod.intern_pool.trackZir(gpa, info.importing_file, .main_struct_inst),
+            .offset = .{ .token_abs = info.import_tok },
         },
     };
 
