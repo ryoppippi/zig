@@ -2,13 +2,13 @@ const std = @import("std");
 const Type = @import("type.zig").Type;
 const AddressSpace = std.builtin.AddressSpace;
 const Alignment = @import("InternPool.zig").Alignment;
-const Feature = @import("Module.zig").Feature;
+const Feature = @import("Zcu.zig").Feature;
 
 pub const default_stack_protector_buffer_size = 4;
 
 pub fn cannotDynamicLink(target: std.Target) bool {
     return switch (target.os.tag) {
-        .freestanding, .other => true,
+        .freestanding => true,
         else => target.isSpirV(),
     };
 }
@@ -45,7 +45,8 @@ pub fn requiresPIC(target: std.Target, linking_libc: bool) bool {
     return target.isAndroid() or
         target.os.tag == .windows or target.os.tag == .uefi or
         osRequiresLibC(target) or
-        (linking_libc and target.isGnuLibC());
+        (linking_libc and target.isGnuLibC()) or
+        (target.abi == .ohos and target.cpu.arch == .aarch64);
 }
 
 /// This is not whether the target supports Position Independent Code, but whether the -fPIC
@@ -426,6 +427,23 @@ pub fn defaultFunctionAlignment(target: std.Target) Alignment {
         .aarch64, .aarch64_32, .aarch64_be => .@"4",
         .sparc, .sparcel, .sparc64 => .@"4",
         .riscv64 => .@"2",
+        else => .@"1",
+    };
+}
+
+pub fn minFunctionAlignment(target: std.Target) Alignment {
+    return switch (target.cpu.arch) {
+        .arm,
+        .armeb,
+        .aarch64,
+        .aarch64_32,
+        .aarch64_be,
+        .riscv32,
+        .riscv64,
+        .sparc,
+        .sparcel,
+        .sparc64,
+        => .@"2",
         else => .@"1",
     };
 }
